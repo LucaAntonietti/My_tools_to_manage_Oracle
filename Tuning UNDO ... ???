@@ -1,0 +1,156 @@
+Oracle Database automatically tunes the undo retention period based on how the undo tablespace is configured.
+
+If the undo tablespace is fixed size, the database tunes the retention period for the best possible undo retention for that tablespace size and the current system load. This tuned retention period can be significantly greater than the specified minimum retention period.
+
+If the undo tablespace is configured with the AUTOEXTEND option, the database tunes the undo retention period to be somewhat longer than the longest-running query on the system at that time. Again, this tuned retention period can be greater than the specified minimum retention period.
+
+Determine the current retention period by querying the TUNED_UNDORETENTION column of the V$UNDOSTAT view. This view contains one row for each 10-minute statistics collection interval over the last 4 days. (Beyond 4 days, the data is available in the DBA_HIST_UNDOSTAT view.) TUNED_UNDORETENTION is given in seconds.
+
+select to_char(begin_time, 'DD-MON-RR HH24:MI') begin_time,
+ to_char(end_time, 'DD-MON-RR HH24:MI') end_time, tuned_undoretention
+ from v$undostat order by end_time;
+BEGIN_TIME END_TIME TUNED_UNDORETENTION
+ --------------- --------------- -------------------
+ 04-FEB-05 00:01 04-FEB-05 00:11 12100
+ ...
+ 07-FEB-05 23:21 07-FEB-05 23:31 86700
+ 07-FEB-05 23:31 07-FEB-05 23:41 86700
+ 07-FEB-05 23:41 07-FEB-05 23:51 86700
+ 07-FEB-05 23:51 07-FEB-05 23:52 86700
+576 rows selected.
+
+Calculating UNDO_RETENTION for given UNDO Tabespace
+
+The following query will helps to optimize the UNDO_RETENTION parameter:
+
+Otimal Undo Retention
+
+ 
+
+ 
+
+ 
+
+ 
+
+Image Source
+
+Because these following queries use the V$UNDOSTAT statistics, run the queries only after the database has been running with UNDO for a significant and representative time!
+
+Actual Undo Size
+
+SELECT SUM(a.bytes) "UNDO_SIZE"
+ FROM v$datafile a,
+ v$tablespace b,
+ dba_tablespaces c
+ WHERE c.contents = 'UNDO'
+ AND c.status = 'ONLINE'
+ AND b.name = c.tablespace_name
+ AND a.ts# = b.ts#;
+UNDO_SIZE
+----------
+ 1572864000
+
+Undo Blocks per Second
+
+SELECT MAX(undoblks/((end_time-begin_time)*3600*24))
+ "UNDO_BLOCK_PER_SEC"
+ FROM v$undostat;
+UNDO_BLOCK_PER_SEC
+------------------
+ 249.398333333333333333333333333333333333
+
+DB Block Size
+
+SELECT TO_NUMBER(value) "DB_BLOCK_SIZE [KByte]"
+ FROM v$parameter
+WHERE name = 'db_block_size';
+DB_BLOCK_SIZE [Byte]
+--------------------
+ 8192
+
+Optimal Undo Retention
+
+770 [Sec]
+
+Using Inline Views:
+
+SELECT d.undo_size/(1024*1024) "ACTUAL UNDO SIZE [MByte]",
+ SUBSTR(e.value,1,25) "UNDO RETENTION [Sec]",
+ ROUND((d.undo_size / (to_number(f.value) *
+ g.undo_block_per_sec))) "OPTIMAL UNDO RETENTION [Sec]"
+ FROM (
+ SELECT SUM(a.bytes) undo_size
+ FROM v$datafile a,
+ v$tablespace b,
+ dba_tablespaces c
+ WHERE c.contents = 'UNDO'
+ AND c.status = 'ONLINE'
+ AND b.name = c.tablespace_name
+ AND a.ts# = b.ts#
+ ) d,
+ v$parameter e,
+ v$parameter f,
+ (
+ SELECT MAX(undoblks/((end_time-begin_time)*3600*24))
+ undo_block_per_sec
+ FROM v$undostat
+ ) g
+WHERE e.name = 'undo_retention'
+ AND f.name = 'db_block_size'
+/
+ACTUAL UNDO SIZE [MByte]
+------------------------
+1500
+UNDO RETENTION [Sec]
+--------------------
+900
+OPTIMAL UNDO RETENTION [Sec]
+----------------------------
+770
+
+Calculating required UNDO Size for given Database Activity
+
+If you are not limited by disk space, then it would be better to choose the UNDO_RETENTION time that is best for you (for FLASHBACK, etc.). Allocate the appropriate size to the UNDO tablespace according to the database activity:
+
+Again, all in one query:
+
+SELECT d.undo_size/(1024*1024) "ACTUAL UNDO SIZE [MByte]",
+ SUBSTR(e.value,1,25) "UNDO RETENTION [Sec]",
+ (TO_NUMBER(e.value) * TO_NUMBER(f.value) *
+ g.undo_block_per_sec) / (1024*1024) 
+ "NEEDED UNDO SIZE [MByte]"
+ FROM (
+ SELECT SUM(a.bytes) undo_size
+ FROM v$datafile a,
+ v$tablespace b,
+ dba_tablespaces c
+ WHERE c.contents = 'UNDO'
+ AND c.status = 'ONLINE'
+ AND b.name = c.tablespace_name
+ AND a.ts# = b.ts#
+ ) d,
+ v$parameter e,
+ v$parameter f,
+ (
+ SELECT MAX(undoblks/((end_time-begin_time)*3600*24))
+ undo_block_per_sec
+ FROM v$undostat
+ ) g
+ WHERE e.name = 'undo_retention'
+ AND f.name = 'db_block_size'
+/
+
+ACTUAL UNDO SIZE [MByte]
+------------------------
+1500
+UNDO RETENTION [Sec] 
+--------------------
+900
+NEEDED UNDO SIZE [MByte]
+------------------------
+1753.582031249999999999999999999999999998
+
+The previous query may return a “NEEDED UNDO SIZE” that is less than the “ACTUAL UNDO SIZE”.
+ If this is the case, you may be wasting space. 
+You can choose to resize your UNDO tablespace to a lesser value or increase your UNDO_RETENTION parameter to use the additional space.
