@@ -1,0 +1,23 @@
+select req.request_id  "REQUEST_ID"
+      ,proc.os_process_id "PID_UNIX"
+      ,sess.sid SID_ORACLE
+      ,prog.user_concurrent_program_name "PROGRAM"
+      ,decode(req.status_code,'R','Running','T','Terminatin','?') "STATUS"
+      ,usr.user_name "REQUESTOR"
+      ,to_char(req.actual_start_date,'dd-mon-yy hh24:mi:ss') "START_DATE"
+      ,round((sysdate-req.actual_start_date)*60*24) "ELAPSED"
+from
+    applsys.fnd_concurrent_requests req
+   ,applsys.fnd_user usr
+   ,applsys.fnd_concurrent_processes proc
+   ,applsys.fnd_concurrent_programs_tl prog
+   ,v$session sess
+where
+     req.status_code in ('R','T')
+ and proc.process_status_code <> 'K'   
+ and sess.audsid = proc.SESSION_ID
+ and req.requested_by=usr.user_id
+ and req.controlling_manager=proc.concurrent_process_id
+ and req.program_application_id=prog.application_id
+ and req.concurrent_program_id=prog.concurrent_program_id
+order by round((sysdate-req.actual_start_date)*60*24) desc
